@@ -156,6 +156,7 @@ jobs:
       run: |
         mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt
         wget -O ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt/kernel https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/kernel
+        wget -O ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt/dtb.img https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img
       
     - name: Building recovery
       run: |
