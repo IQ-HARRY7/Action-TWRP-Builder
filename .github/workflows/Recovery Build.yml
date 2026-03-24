@@ -152,6 +152,11 @@ jobs:
       with:
         swap-size-gb: 12
 
+    - name: Download prebuilt kernel
+      run: |
+        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt
+        wget -O ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt/kernel https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/v1.0-prebuilt/kernel
+      
     - name: Building recovery
       run: |
         source build/envsetup.sh
