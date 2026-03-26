@@ -159,6 +159,7 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        export BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make vendorbootimage -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
