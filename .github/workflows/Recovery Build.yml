@@ -184,14 +184,16 @@ jobs:
         echo "Prebuilt sizes:"
         ls -lh "$PREBUILT_DIR"
 
-    - name: Build Recovery
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+    - name: Building recovery
       run: |
-        export ALLOW_MISSING_DEPENDENCIES=true
         source build/envsetup.sh
-        lunch "${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export BUILDING_VENDOR_BOOT_IMAGE=true
+        export BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make clean
         make vendorbootimage -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
