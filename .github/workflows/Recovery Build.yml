@@ -1,10 +1,13 @@
-name: Recovery Build
+name: Recovery Build (TWRP – beryl)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Triggered manually. Fill in the inputs below (or accept the beryl defaults).
+# ──────────────────────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
+        description: 'MANIFEST_URL'
         required: true
         default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
@@ -14,166 +17,244 @@ on:
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
-        default: 'https://github.com/TeamWin/android_device_asus_I003D'
+        default: 'https://github.com/IQ-HARRY7/android_device_xiaomi_beryl'
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
         default: 'android-12.1'
       DEVICE_PATH:
-        description: 'DEVICE_PATH'
+        description: 'DEVICE_PATH (relative inside workspace)'
         required: true
-        default: 'device/asus/I003D'
+        default: 'device/xiaomi/beryl'
       COMMON_TREE_URL:
-        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        description: 'COMMON_TREE_URL (leave blank if none)'
         required: false
       COMMON_PATH:
-        description: 'COMMON_PATH (if no common tree, leave blank)'
+        description: 'COMMON_PATH (leave blank if none)'
         required: false
       DEVICE_NAME:
-        description: 'DEVICE_NAME'
+        description: 'DEVICE_NAME (codename)'
         required: true
-        default: 'I003D'
+        default: 'beryl'
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
+        description: 'MAKEFILE_NAME (product file prefix, e.g. omni_beryl)'
         required: true
-        default: 'twrp_I003D'
+        default: 'omni_beryl'
       BUILD_TARGET:
-        description: 'BUILD_TARGET'
+        description: 'BUILD_TARGET — vendorboot for header-v4/GKI devices'
         required: true
-        default: 'recovery'
+        default: 'vendorboot'
 
 jobs:
   build:
+    # Only the repo owner may trigger this workflow
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+
     steps:
+    # ── 0. Echo run parameters ────────────────────────────────────────────────
     - name: Display Run Parameters
       run: |
-        echo "::group::User Environment Variables"
-        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
-        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
-        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: vendor_boot.img"
+        echo "::group::Build Parameters"
+        echo "Manifest URL    : ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch : ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL : ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Br. : ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path     : ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name     : ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name   : ${{ github.event.inputs.MAKEFILE_NAME }}"
+        echo "Build Target    : ${{ github.event.inputs.BUILD_TARGET }}.img"
         echo "::endgroup::"
 
+    # ── 1. Checkout this Action repo ─────────────────────────────────────────
     - name: Check Out
       uses: actions/checkout@v4
 
+    # ── 2. Slim down the runner (frees ~30 GB) ───────────────────────────────
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
 
-    - name: Prepare the environment
+    # ── 3. Install build dependencies ────────────────────────────────────────
+    - name: Prepare the Environment
       run: |
-        sudo apt update && sudo apt upgrade -y
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
-            libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
-            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev \
-            build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+          linux-modules-extra-$(uname -r) \
+          gperf gcc-multilib gcc-12-multilib g++-multilib g++-12-multilib \
+          libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev \
+          lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache \
+          lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev \
+          libsdl1.2-dev build-essential libgtk-3-dev libglu1-mesa-dev \
+          freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
+          imagemagick libbz2-dev lzma ncftp qemu-user-static \
+          libstdc++-12-dev libncurses6 python3 python-is-python3 \
+          tar curl wget zip unzip
 
+    # ── 4. Java (needed by some build scripts) ───────────────────────────────
     - name: Install OpenJDK
       uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: '11'
 
+    # ── 5. SSH keys (only when SSH URLs are provided) ────────────────────────
     - name: Setup SSH Keys
-      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
+      if: |
+        startsWith(github.event.inputs.MANIFEST_URL,    'git@github.com') ||
+        startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+        startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com')
       uses: webfactory/ssh-agent@v0.9.0
       with:
-          ssh-private-key: |
-            ${{ secrets.SSH_PRIVATE_KEY }}
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
+    # ── 6. Install repo tool ─────────────────────────────────────────────────
     - name: Install repo
       run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        mkdir -p ~/bin
+        curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
+          -o ~/bin/repo
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
 
+    # ── 7. Initialise the TWRP source manifest ───────────────────────────────
     - name: Initialize repo
-      run: |
-        mkdir workspace
-        cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "Nico170420"
-        git config --global user.email "b170420nc@gmail.com"
-        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
       id: pwd
+      run: |
+        mkdir -p workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> "$GITHUB_OUTPUT"
+        git config --global user.name  "TWRP Builder"
+        git config --global user.email "twrp-builder@github.com"
+        repo init --depth=1 \
+          -u "${{ github.event.inputs.MANIFEST_URL }}" \
+          -b "${{ github.event.inputs.MANIFEST_BRANCH }}"
 
+    # ── 8. Sync source (~7 GB, depth-1) ─────────────────────────────────────
     - name: Repo Sync
-      run: |
-        repo sync -j$(nproc --all) --force-sync
       working-directory: workspace
-
-    - name: Clone device tree
       run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        repo sync -j$(nproc --all) --force-sync --no-clone-bundle \
+          --no-tags --optimized-fetch
 
-    - name: Clone common tree
+    # ── 9. Clone device tree ─────────────────────────────────────────────────
+    - name: Clone Device Tree
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      run: |
+        git clone "${{ github.event.inputs.DEVICE_TREE_URL }}" \
+          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
+          "./${{ github.event.inputs.DEVICE_PATH }}"
+
+    # ── 10. Clone common tree (optional) ─────────────────────────────────────
+    - name: Clone Common Tree
       if: |
-        github.event.inputs.COMMON_TREE_URL != null
-        && github.event.inputs.COMMON_PATH != null
-      run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+        github.event.inputs.COMMON_TREE_URL != '' &&
+        github.event.inputs.COMMON_PATH != ''
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      run: |
+        git clone "${{ github.event.inputs.COMMON_TREE_URL }}" \
+          -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
+          "./${{ github.event.inputs.COMMON_PATH }}"
 
+    # ── 11. Determine whether to look for twrp.dependencies or omni.dependencies
     - name: Check Build Tree
-      uses: haya14busa/action-cond@v1
       id: buildtree
+      uses: haya14busa/action-cond@v1
       with:
-        cond: ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' || github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
-        if_true: twrp
+        cond: >-
+          ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' ||
+              github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
+        if_true:  twrp
         if_false: omni
 
+    # ── 12. Sync any extra repos declared in twrp/omni.dependencies ──────────
     - name: Sync Device Dependencies
-      run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
-        repo sync -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       continue-on-error: true
+      run: |
+        DEP_FILE="${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies"
+        if [ -f "$DEP_FILE" ]; then
+          bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "$DEP_FILE"
+          repo sync -j$(nproc --all) --force-sync
+        else
+          echo "No dependencies file found at $DEP_FILE – skipping."
+        fi
 
+    # ── 13. Add swap (build needs ~12 GB RAM equivalent) ─────────────────────
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
 
-    - name: Download prebuilt kernel
+    # ── 14. Download prebuilt kernel + DTB ───────────────────────────────────
+    #        These are released separately at IQ-HARRY7/android_device_xiaomi_beryl
+    - name: Download Prebuilt Kernel & DTB
       run: |
-        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt
-        wget -O ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt/kernel https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/kernel
-        wget -O ${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt/dtb.img https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img
+        PREBUILT_DIR="${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt"
+        mkdir -p "$PREBUILT_DIR"
 
-    - name: Building recovery
-      run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        export BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make vendorbootimage -j$(nproc --all)
+        echo "Downloading kernel…"
+        wget -q --show-progress \
+          -O "$PREBUILT_DIR/kernel" \
+          "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/kernel"
+
+        echo "Downloading dtb.img…"
+        wget -q --show-progress \
+          -O "$PREBUILT_DIR/dtb.img" \
+          "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img"
+
+        echo "Prebuilt sizes:"
+        ls -lh "$PREBUILT_DIR"
+
+    # ── 15. Build vendor_boot.img ─────────────────────────────────────────────
+    #  BUG-FIX NOTES (what was broken in the original workflow):
+    #
+    #  ① The original workflow exported BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
+    #    *after* `source build/envsetup.sh`. envsetup.sh triggers TWRP's device
+    #    auto-detection which calls dumpvars → evaluates BoardConfig.mk → hits
+    #    board_config.mk:902 before the export ever runs.  Fix: the flag is now
+    #    only set inside BoardConfig.mk (with BUILDING_VENDOR_BOOT_IMAGE := true),
+    #    so we remove it from here entirely.
+    #
+    #  ② ALLOW_MISSING_DEPENDENCIES must be exported before envsetup.sh so that
+    #    the initial dumpvars pass also respects it.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Build Recovery (vendor_boot.img)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      run: |
+        export ALLOW_MISSING_DEPENDENCIES=true   # must be before envsetup
 
+        source build/envsetup.sh
+
+        lunch "${{ github.event.inputs.MAKEFILE_NAME }}-eng"
+
+        make clean
+
+        # GKI / header-v4 device → TWRP lives in vendor_boot, not recovery
+        make vendorbootimage -j$(nproc --all)
+
+    # ── 16. Upload vendor_boot.img (and any OTA zip) to a GitHub Release ──────
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
+        name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: twrp-${{ github.run_id }}
         body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: vendor_boot.img
+          ## TWRP for ${{ github.event.inputs.DEVICE_NAME }}
+
+          | Field         | Value |
+          |---------------|-------|
+          | Device        | POCO M7 Pro 5G (beryl) |
+          | Manifest      | ${{ github.event.inputs.MANIFEST_BRANCH }} |
+          | Build target  | vendor_boot.img |
+          | Run ID        | ${{ github.run_id }} |
+
+          > Flash with `fastboot flash vendor_boot vendor_boot.img`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
