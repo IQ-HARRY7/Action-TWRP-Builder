@@ -18,7 +18,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'android-12.1'
+        default: 'beryl-user-12-SP1A.210812.016-OS2.0.3.0.VOQINXM-release-keys'
       DEVICE_PATH:
         description: 'DEVICE_PATH'
         required: true
@@ -176,11 +176,21 @@ jobs:
         make clean
         make vendorbootimage -j$(nproc --all)
 
+    - name: Collect output files
+      run: |
+        OUT_DIR="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        echo "=== Output directory contents ==="
+        ls -lh "$OUT_DIR" 2>/dev/null || echo "Output directory not found!"
+        echo "=== Searching for vendor_boot ==="
+        find "$OUT_DIR" -name "vendor_boot*" 2>/dev/null
+        echo "=== Copying to GITHUB_WORKSPACE ==="
+        cp "$OUT_DIR/vendor_boot.img" "${GITHUB_WORKSPACE}/vendor_boot.img"
+        ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          ${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img
+        files: vendor_boot.img
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
         body: |
