@@ -180,18 +180,25 @@ jobs:
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        TOOLS="out/host/linux-x86/bin"
         PREBUILT="${{ github.event.inputs.DEVICE_PATH }}/prebuilt"
-        echo "=== Output directory ==="
-        ls -lh "$OUT/" 2>/dev/null
-        echo "=== Building vendor_boot.img ==="
-        $TOOLS/mkbootimg \
+        echo "=== Recovery folder contents ==="
+        find "$OUT/recovery" -type f 2>/dev/null
+        echo "=== Installing mkbootimg ==="
+        pip install mkbootimg 2>/dev/null || true
+        sudo apt-get install -y mkbootimg 2>/dev/null || true
+        MKBOOTIMG=$(find /usr -name "mkbootimg" 2>/dev/null | head -1)
+        echo "mkbootimg found at: $MKBOOTIMG"
+        echo "=== Creating ramdisk from recovery/root ==="
+        cd "$OUT/recovery/root"
+        find . | cpio -H newc -o 2>/dev/null | lz4 -l > "${GITHUB_WORKSPACE}/ramdisk-recovery.img"
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        echo "=== Packing vendor_boot ==="
+        $MKBOOTIMG \
           --header_version 4 \
-          --vendor_ramdisk "$OUT/ramdisk-recovery.img" \
+          --vendor_ramdisk "${GITHUB_WORKSPACE}/ramdisk-recovery.img" \
           --dtb "$PREBUILT/dtb.img" \
           --vendor_cmdline "bootopt=64S3,32N2,64N2" \
           --output "${GITHUB_WORKSPACE}/vendor_boot.img"
-        echo "=== Result ==="
         ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
 
     - name: Upload to Release
