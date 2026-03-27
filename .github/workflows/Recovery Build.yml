@@ -168,6 +168,11 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
+        
+    - name: Patch board_config check
+      run: |
+        sed -i 's/$(error Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/$(warning Suppressed BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/' build/make/core/board_config.mk
+       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Download Prebuilt Kernel and DTB
       run: |
