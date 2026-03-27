@@ -179,18 +179,17 @@ jobs:
     - name: Collect output files
       run: |
         OUT_DIR="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        echo "=== Output directory contents ==="
-        ls -lh "$OUT_DIR" 2>/dev/null || echo "Output directory not found!"
-        echo "=== Searching for vendor_boot ==="
-        find "$OUT_DIR" -name "vendor_boot*" 2>/dev/null
-        echo "=== Copying to GITHUB_WORKSPACE ==="
-        cp "$OUT_DIR/vendor_boot.img" "${GITHUB_WORKSPACE}/vendor_boot.img"
-        ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
+        echo "=== All .img files in output ==="
+        find "$OUT_DIR" -name "*.img" 2>/dev/null
+        echo "=== Copying all .img files to GITHUB_WORKSPACE ==="
+        find "$OUT_DIR" -name "*.img" -exec cp {} "${GITHUB_WORKSPACE}/" \; 2>/dev/null
+        echo "=== Files ready to upload ==="
+        ls -lh "${GITHUB_WORKSPACE}"/*.img 2>/dev/null || echo "No .img files found!"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: vendor_boot.img
+        files: "*.img"
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
         body: |
@@ -200,3 +199,4 @@ jobs:
           Flash: fastboot flash vendor_boot vendor_boot.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
