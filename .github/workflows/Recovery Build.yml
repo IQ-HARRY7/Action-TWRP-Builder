@@ -1,4 +1,4 @@
-name: Recovery Build TWRP beryl
+name: Recovery Build
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ on:
         required: true
         default: 'android-12.1'
       DEVICE_PATH:
-        description: 'DEVICE_PATH (relative inside workspace)'
+        description: 'DEVICE_PATH'
         required: true
         default: 'device/xiaomi/beryl'
       COMMON_TREE_URL:
@@ -30,15 +30,15 @@ on:
         description: 'COMMON_PATH (leave blank if none)'
         required: false
       DEVICE_NAME:
-        description: 'DEVICE_NAME (codename)'
+        description: 'DEVICE_NAME'
         required: true
         default: 'beryl'
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME (e.g. omni_beryl)'
+        description: 'MAKEFILE_NAME'
         required: true
         default: 'omni_beryl'
       BUILD_TARGET:
-        description: 'BUILD_TARGET (vendorboot for GKI/header-v4 devices)'
+        description: 'BUILD_TARGET'
         required: true
         default: 'vendorboot'
 
@@ -55,11 +55,10 @@ jobs:
         echo "Manifest URL    : ${{ github.event.inputs.MANIFEST_URL }}"
         echo "Manifest Branch : ${{ github.event.inputs.MANIFEST_BRANCH }}"
         echo "Device Tree URL : ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Br. : ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
         echo "Device Path     : ${{ github.event.inputs.DEVICE_PATH }}"
         echo "Device Name     : ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Makefile Name   : ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target    : ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Build Target    : vendor_boot.img"
         echo "::endgroup::"
 
     - name: Check Out
@@ -89,15 +88,6 @@ jobs:
       with:
         distribution: 'zulu'
         java-version: '11'
-
-    - name: Setup SSH Keys
-      if: |
-        startsWith(github.event.inputs.MANIFEST_URL,    'git@github.com') ||
-        startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-        startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com')
-      uses: webfactory/ssh-agent@v0.9.0
-      with:
-        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
     - name: Install repo
       run: |
@@ -142,63 +132,49 @@ jobs:
           -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
           "./${{ github.event.inputs.COMMON_PATH }}"
 
-    - name: Check Build Tree
-      id: buildtree
-      uses: haya14busa/action-cond@v1
-      with:
-        cond: >-
-          ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' ||
-              github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
-        if_true:  twrp
-        if_false: omni
-
     - name: Sync Device Dependencies
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       continue-on-error: true
       run: |
-        DEP_FILE="${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies"
-        if [ -f "$DEP_FILE" ]; then
-          bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "$DEP_FILE"
+        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" ]; then
+          bash "${GITHUB_WORKSPACE}/scripts/convert.sh" \
+            "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies"
           repo sync -j$(nproc --all) --force-sync
         else
-          echo "No dependencies file at $DEP_FILE - skipping."
+          echo "No dependencies file - skipping."
         fi
 
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
-        
+
     - name: Patch board_config check
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         sed -i 's/$(error Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/$(warning Suppressed BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/' build/make/core/board_config.mk
-       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        echo "Patch applied successfully"
 
     - name: Download Prebuilt Kernel and DTB
       run: |
         PREBUILT_DIR="${{ steps.pwd.outputs.workspace-folder }}/${{ github.event.inputs.DEVICE_PATH }}/prebuilt"
         mkdir -p "$PREBUILT_DIR"
-        echo "Downloading kernel..."
         wget -q --show-progress \
           -O "$PREBUILT_DIR/kernel" \
           "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/kernel"
-        echo "Downloading dtb.img..."
         wget -q --show-progress \
           -O "$PREBUILT_DIR/dtb.img" \
           "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img"
-        echo "Prebuilt sizes:"
         ls -lh "$PREBUILT_DIR"
 
     - name: Building recovery
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        export BUILDING_VENDOR_BOOT_IMAGE=true
-        export BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make clean
         make vendorbootimage -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
@@ -212,8 +188,6 @@ jobs:
           TWRP for ${{ github.event.inputs.DEVICE_NAME }}
           Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
           Build target: vendor_boot.img
-          Run ID: ${{ github.run_id }}
           Flash: fastboot flash vendor_boot vendor_boot.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
