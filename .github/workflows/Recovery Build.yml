@@ -174,22 +174,30 @@ jobs:
         export ALLOW_MISSING_DEPENDENCIES=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make clean
-        make vendorbootimage -j$(nproc --all)
+        make recoveryimage -j$(nproc --all)
 
-    - name: Collect output files
+    - name: Pack vendor_boot
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        OUT_DIR="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        echo "=== All .img files in output ==="
-        find "$OUT_DIR" -name "*.img" 2>/dev/null
-        echo "=== Copying all .img files to GITHUB_WORKSPACE ==="
-        find "$OUT_DIR" -name "*.img" -exec cp {} "${GITHUB_WORKSPACE}/" \; 2>/dev/null
-        echo "=== Files ready to upload ==="
-        ls -lh "${GITHUB_WORKSPACE}"/*.img 2>/dev/null || echo "No .img files found!"
+        OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        TOOLS="out/host/linux-x86/bin"
+        PREBUILT="${{ github.event.inputs.DEVICE_PATH }}/prebuilt"
+        echo "=== Output directory ==="
+        ls -lh "$OUT/" 2>/dev/null
+        echo "=== Building vendor_boot.img ==="
+        $TOOLS/mkbootimg \
+          --header_version 4 \
+          --vendor_ramdisk "$OUT/ramdisk-recovery.img" \
+          --dtb "$PREBUILT/dtb.img" \
+          --vendor_cmdline "bootopt=64S3,32N2,64N2" \
+          --output "${GITHUB_WORKSPACE}/vendor_boot.img"
+        echo "=== Result ==="
+        ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: "*.img"
+        files: vendor_boot.img
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
         body: |
