@@ -181,25 +181,62 @@ jobs:
       run: |
         OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         PREBUILT="${{ github.event.inputs.DEVICE_PATH }}/prebuilt"
-        echo "=== Installing mkbootimg ==="
-        sudo apt-get install -y mkbootimg 2>/dev/null || true
-        MKBOOTIMG=$(which mkbootimg)
-        echo "mkbootimg found at: $MKBOOTIMG"
+        WORKSPACE="${GITHUB_WORKSPACE}"
         echo "=== Creating ramdisk from recovery/root ==="
         cd "$OUT/recovery/root"
-        find . | cpio -H newc -o 2>/dev/null | lz4 -l > "${GITHUB_WORKSPACE}/ramdisk-recovery.img"
+        find . | cpio -H newc -o 2>/dev/null | lz4 -l > "${WORKSPACE}/ramdisk-recovery.img"
         cd ${{ steps.pwd.outputs.workspace-folder }}
-        echo "Ramdisk size:"
-        ls -lh "${GITHUB_WORKSPACE}/ramdisk-recovery.img"
-        echo "=== Packing vendor_boot ==="
-        $MKBOOTIMG \
-          --header_version 4 \
-          --vendor_ramdisk "${GITHUB_WORKSPACE}/ramdisk-recovery.img" \
-          --dtb "$PREBUILT/dtb.img" \
-          --vendor_cmdline "bootopt=64S3,32N2,64N2" \
-          --output "${GITHUB_WORKSPACE}/vendor_boot.img"
+        echo "Ramdisk size: $(ls -lh ${WORKSPACE}/ramdisk-recovery.img)"
+        echo "=== Packing vendor_boot with Python ==="
+        python3 << 'PYEOF'
+        import struct, os, sys
+
+        WORKSPACE = os.environ.get('GITHUB_WORKSPACE', '')
+        ramdisk_path = f"{WORKSPACE}/ramdisk-recovery.img"
+        dtb_path     = "device/xiaomi/beryl/prebuilt/dtb.img"
+        output_path  = f"{WORKSPACE}/vendor_boot.img"
+
+        ramdisk = open(ramdisk_path, 'rb').read()
+        dtb     = open(dtb_path,     'rb').read()
+
+        PAGE = 4096
+
+        def pad(data):
+            r = len(data) % PAGE
+            return data + b'\x00' * (PAGE - r) if r else data
+
+        # Vendor boot v4 header (fixed size = 4 pages = 16384 bytes)
+        VENDOR_RAMDISK_TYPE_PLATFORM = 1
+        cmdline = b'bootopt=64S3,32N2,64N2'
+
+        header = struct.pack(
+            '<4sIIII2048sIIIIIII2048s',
+            b'VNDR',                  # magic
+            4,                        # header_version
+            PAGE,                     # page_size
+            0x26f08000,               # kernel_load_addr (unused v4)
+            0x07c88000,               # ramdisk_load_addr (unused v4)
+            cmdline + b'\x00' * (2048 - len(cmdline)),  # cmdline
+            len(ramdisk),             # vendor_ramdisk_size
+            len(dtb),                 # dtb_size
+            0,                        # dtb_load_addr
+            0,                        # vendor_ramdisk_table_size
+            0,                        # vendor_ramdisk_table_entry_num
+            0,                        # vendor_ramdisk_table_entry_size
+            0,                        # bootconfig_size
+            b'\x00' * 2048            # name
+        )
+
+        with open(output_path, 'wb') as f:
+            f.write(pad(header))
+            f.write(pad(ramdisk))
+            f.write(pad(dtb))
+
+        size = os.path.getsize(output_path)
+        print(f"vendor_boot.img created! Size: {size/1024/1024:.2f} MB")
+        PYEOF
         ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
-        
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
