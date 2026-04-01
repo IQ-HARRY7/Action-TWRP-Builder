@@ -172,6 +172,22 @@ jobs:
         echo "Prebuilt files:"
         ls -lh "$PREBUILT_DIR"
 
+    - name: Pre-build Checks
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      run: |
+        echo "=== Verifying prebuilt files ==="
+        ls -lh "${{ github.event.inputs.DEVICE_PATH }}/prebuilt/" || echo "MISSING prebuilt dir!"
+
+        echo "=== Verifying board_config patch ==="
+        grep -n "BOARD_MOVE_RECOVERY" build/make/core/board_config.mk | head -5
+
+        echo "=== Verifying device tree is cloned ==="
+        ls "${{ github.event.inputs.DEVICE_PATH }}/" | head -20
+
+        echo "=== Verifying BoardConfig.mk key vars ==="
+        grep -E "BOARD_MOVE_RECOVERY|BUILDING_VENDOR_BOOT|BOARD_RAMDISK_USE_LZ4|BOARD_VENDOR_BOOTIMAGE" \
+          "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"    
+
     # FIX #1 — Was hardcoded 'make recoveryimage'. Now uses BUILD_TARGET input
     # so 'vendorboot' → 'make vendorbootimage', which is what beryl needs.
     - name: Build Recovery
@@ -180,24 +196,42 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
 
+        echo "=== Running lunch ==="
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         if [ $? -ne 0 ]; then
-          echo "ERROR: lunch failed — check MAKEFILE_NAME and device tree"
+          echo "FATAL: lunch failed"
           exit 1
         fi
 
         make clean
 
-        # Pipe full output to log AND terminal, fail on error
-        make recoveryimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+        echo "=== Starting build — full log at build.log ==="
+        make recoveryimage -j$(nproc --all) \
+          showcommands \
+          2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
         BUILD_EXIT=${PIPESTATUS[0]}
 
+        echo ""
+        echo "=== Last 100 lines of build log ==="
+        tail -100 "${GITHUB_WORKSPACE}/build.log"
+
         if [ $BUILD_EXIT -ne 0 ]; then
+          echo "FATAL: make failed with exit $BUILD_EXIT"
+          exit 1
+        fi
+
+        echo "=== Build exited 0 — checking for output images ==="
+        OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        find "$OUT" -name "*.img" | sort
+        if [ -z "$(find "$OUT" -name "*.img")" ]; then
+          echo "FATAL: Build exited 0 but produced NO .img files"
+          echo "This usually means the lunch target is wrong or"
+          echo "the device makefile has no image build rules."
           echo ""
-          echo "========================================="
-          echo "BUILD FAILED — Last 80 lines of build log"
-          echo "========================================="
-          tail -80 "${GITHUB_WORKSPACE}/build.log"
+          echo "=== grep for vendor_boot in build log ==="
+          grep -i "vendor_boot\|vendorboot\|mkvendorboot" "${GITHUB_WORKSPACE}/build.log" | tail -20
+          echo "=== grep for 'nothing to do' or 'up to date' ==="
+          grep -i "nothing to do\|up to date\|no rule" "${GITHUB_WORKSPACE}/build.log" | tail -10
           exit 1
         fi
 
