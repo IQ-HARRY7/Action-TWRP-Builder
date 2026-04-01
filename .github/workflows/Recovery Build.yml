@@ -179,12 +179,68 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        if [ $? -ne 0 ]; then
+          echo "ERROR: lunch failed — check MAKEFILE_NAME and device tree"
+          exit 1
+        fi
+
         make clean
-        # TWRP minimal manifest uses recoveryimage, not vendorbootimage.
-        # With BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true,
-        # this also produces vendor_boot.img automatically.
-        make recoveryimage -j$(nproc --all)
+
+        # Pipe full output to log AND terminal, fail on error
+        make recoveryimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+        BUILD_EXIT=${PIPESTATUS[0]}
+
+        if [ $BUILD_EXIT -ne 0 ]; then
+          echo ""
+          echo "========================================="
+          echo "BUILD FAILED — Last 80 lines of build log"
+          echo "========================================="
+          tail -80 "${GITHUB_WORKSPACE}/build.log"
+          exit 1
+        fi
+
+    # Always upload build log so you can inspect it even on success
+    - name: Upload Build Log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log-${{ github.run_id }}
+        path: build.log
+        retention-days: 5
+
+    - name: Collect Output Files
+      run: |
+        OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+
+        echo "=== All .img files produced ==="
+        find "$OUT" -name "*.img" | sort
+
+        VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
+
+        if [ -z "$VENDOR_BOOT" ]; then
+          echo "ERROR: vendor_boot.img not found — check build log artifact"
+          exit 1
+        fi
+
+        echo "Found: $VENDOR_BOOT"
+        cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
+
+        python3 - << 'PYEOF'
+        import struct
+        data = open("vendor_boot.img", "rb").read()
+        magic        = data[0:8]
+        ramdisk_addr = struct.unpack_from("<I", data, 0x14)[0]
+        ramdisk_size = struct.unpack_from("<I", data, 0x18)[0]
+        print(f"Magic        : {magic}")
+        print(f"ramdisk_addr : {hex(ramdisk_addr)}")
+        print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
+        assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
+        assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
+        assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small — likely truncated ({ramdisk_size} bytes)"
+        print("All sanity checks PASSED ✓")
+        PYEOF
     # FIX #2 — Removed the broken manual "Pack vendor_boot" step entirely.
     # It used lz4 -l (legacy, 8 MB cap = the exact truncation bug we fixed),
     # wrong header magic 'VNDR' (should be 'VNDRBOOT'), wrong struct layout,
