@@ -181,8 +181,10 @@ jobs:
         export ALLOW_MISSING_DEPENDENCIES=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make clean
-        make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-
+        # TWRP minimal manifest uses recoveryimage, not vendorbootimage.
+        # With BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true,
+        # this also produces vendor_boot.img automatically.
+        make recoveryimage -j$(nproc --all)
     # FIX #2 — Removed the broken manual "Pack vendor_boot" step entirely.
     # It used lz4 -l (legacy, 8 MB cap = the exact truncation bug we fixed),
     # wrong header magic 'VNDR' (should be 'VNDRBOOT'), wrong struct layout,
@@ -194,10 +196,24 @@ jobs:
     - name: Collect Output Files
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        cp "$OUT/vendor_boot.img" "${GITHUB_WORKSPACE}/vendor_boot.img"
-        echo "Output files:"
-        ls -lh "${GITHUB_WORKSPACE}/vendor_boot.img"
-        # Sanity check — catch wrong ramdisk_addr or truncation before release
+
+        echo "=== Files produced in OUT ==="
+        find "$OUT" -maxdepth 1 -name "*.img" | sort
+
+        # Locate vendor_boot.img — fallback search if not at root of OUT
+        VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
+
+        if [ -z "$VENDOR_BOOT" ]; then
+          echo "ERROR: vendor_boot.img not found anywhere under $OUT"
+          echo "=== Full OUT directory listing ==="
+          find "$OUT" -maxdepth 2 | sort
+          exit 1
+        fi
+
+        echo "Found: $VENDOR_BOOT"
+        cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
+
+        # Sanity check header
         python3 - << 'PYEOF'
         import struct, sys
         data = open("vendor_boot.img", "rb").read()
@@ -207,9 +223,9 @@ jobs:
         print(f"Magic        : {magic}")
         print(f"ramdisk_addr : {hex(ramdisk_addr)}")
         print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
-        assert magic == b"VNDRBOOT",        f"FAIL: bad magic {magic}"
-        assert ramdisk_addr == 0x44000000,  f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
-        assert ramdisk_size > 10_000_000,   f"FAIL: ramdisk suspiciously small — likely truncated ({ramdisk_size} bytes)"
+        assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
+        assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
+        assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small — likely truncated ({ramdisk_size} bytes)"
         print("All sanity checks PASSED ✓")
         PYEOF
 
