@@ -154,10 +154,38 @@ jobs:
     - name: Patch board_config check
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        sed -i \
-          's/$(error Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/$(warning Suppressed BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/' \
-          build/make/core/board_config.mk
-        echo "Patch applied."
+        python3 << 'PYEOF'
+        path = "build/make/core/board_config.mk"
+        with open(path) as f:
+            content = f.read()
+
+        # Our old sed patch only silenced the error but the guard still
+        # suppresses BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT because
+        # BUILDING_VENDOR_BOOT_IMAGE is always empty when board_config.mk
+        # is evaluated (it gets set later in the main Makefile).
+        # Fix: neutralize the ifneq condition so the guard never fires.
+        patched = content.replace(
+            "ifneq ($(BUILDING_VENDOR_BOOT_IMAGE),true)",
+            "ifneq (true,true) # PATCHED: guard disabled — BUILDING_VENDOR_BOOT_IMAGE evaluated too late"
+        )
+
+        if patched == content:
+            print("WARNING: Target string not found — board_config.mk may have changed")
+            # Fallback: print the lines around 902 for diagnosis
+            lines = content.splitlines()
+            for i, l in enumerate(lines[895:910], start=896):
+                print(f"  {i}: {l}")
+        else:
+            with open(path, "w") as f:
+                f.write(patched)
+            print("Patch applied successfully.")
+
+        # Verify
+        with open(path) as f:
+            for i, l in enumerate(f, 1):
+                if "BUILDING_VENDOR_BOOT_IMAGE" in l or "BOARD_MOVE_RECOVERY" in l:
+                    print(f"  line {i}: {l.rstrip()}")
+        PYEOF
 
     - name: Download Prebuilt Kernel and DTB
       run: |
@@ -196,7 +224,6 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
 
-        echo "=== Running lunch ==="
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         if [ $? -ne 0 ]; then
           echo "FATAL: lunch failed"
@@ -205,33 +232,31 @@ jobs:
 
         make clean
 
-        echo "=== Starting build — full log at build.log ==="
-        make recoveryimage -j$(nproc --all) \
-          showcommands \
-          2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+        # Build recoveryimage — with the guard neutralized,
+        # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT is now honoured
+        # and vendor_boot.img will be emitted as output.
+        make recoveryimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
         BUILD_EXIT=${PIPESTATUS[0]}
 
-        echo ""
-        echo "=== Last 100 lines of build log ==="
-        tail -100 "${GITHUB_WORKSPACE}/build.log"
+        # Confirm vendor_boot.img was produced before proceeding
+        OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        echo "=== Images produced ==="
+        find "$OUT" -name "*.img" | sort
 
         if [ $BUILD_EXIT -ne 0 ]; then
-          echo "FATAL: make failed with exit $BUILD_EXIT"
+          echo "FATAL: make failed — last 80 lines:"
+          tail -80 "${GITHUB_WORKSPACE}/build.log"
           exit 1
         fi
 
-        echo "=== Build exited 0 — checking for output images ==="
-        OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        find "$OUT" -name "*.img" | sort
-        if [ -z "$(find "$OUT" -name "*.img")" ]; then
-          echo "FATAL: Build exited 0 but produced NO .img files"
-          echo "This usually means the lunch target is wrong or"
-          echo "the device makefile has no image build rules."
-          echo ""
-          echo "=== grep for vendor_boot in build log ==="
-          grep -i "vendor_boot\|vendorboot\|mkvendorboot" "${GITHUB_WORKSPACE}/build.log" | tail -20
-          echo "=== grep for 'nothing to do' or 'up to date' ==="
-          grep -i "nothing to do\|up to date\|no rule" "${GITHUB_WORKSPACE}/build.log" | tail -10
+        if [ -z "$(find "$OUT" -name "vendor_boot.img")" ]; then
+          echo "FATAL: Build succeeded but vendor_boot.img still missing."
+          echo "=== board_config patch check ==="
+          grep -n "BUILDING_VENDOR_BOOT_IMAGE\|BOARD_MOVE_RECOVERY" \
+            build/make/core/board_config.mk | head -10
+          echo "=== BoardConfig.mk key vars ==="
+          grep -E "BOARD_MOVE_RECOVERY|BUILDING_VENDOR_BOOT|BOARD_RAMDISK_USE_LZ4" \
+            "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
           exit 1
         fi
 
