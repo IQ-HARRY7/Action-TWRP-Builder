@@ -154,23 +154,28 @@ jobs:
     - name: Patch board_config check
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        echo "=== Removing error line ==="
-        # Use single quotes in sed pattern — prevents shell expanding $(error)
+        # Instead of just removing the $(error) line, we force
+        # BUILDING_VENDOR_BOOT_IMAGE=true right before the guard block
+        # so the entire ifndef block at line 900 is skipped entirely.
         sed -i '/Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d' \
           build/make/core/board_config.mk
 
-        echo "=== Context around patched block (lines 898-910) ==="
-        sed -n '898,910p' build/make/core/board_config.mk
+        # Inject the forced assignment just before line 900's ifndef block
+        sed -i '/^ifndef BUILDING_VENDOR_BOOT_IMAGE/{
+          /BUILDING_VENDOR_BOOT_IMAGE/i # PATCHED: force true so guard block is skipped\nBUILDING_VENDOR_BOOT_IMAGE := true
+        }' build/make/core/board_config.mk
 
-        echo "=== Verifying error line is gone ==="
-        # MUST use single quotes — double quotes cause $(error to be shell-expanded
+        echo "=== Patch result around line 898-912 ==="
+        grep -n "BUILDING_VENDOR_BOOT_IMAGE\|BOARD_MOVE_RECOVERY" \
+          build/make/core/board_config.mk | grep -A2 -B2 "900\|901\|902\|903"
+
+        # Safe grep — single quotes prevent $(error) shell expansion
         if grep -q 'Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT' \
             build/make/core/board_config.mk; then
-          echo "FATAL: error line still present — patch failed"
+          echo "FATAL: error line still present"
           exit 1
-        else
-          echo "Patch verified OK ✓"
         fi
+        echo "Patch verified OK ✓"
 
     - name: Download Prebuilt Kernel and DTB
       run: |
@@ -207,12 +212,8 @@ jobs:
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
-
-        # Expose BUILDING_VENDOR_BOOT_IMAGE to the envsetup/dumpvars scope
-        # board_config.mk sets it based on BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE
-        # but exporting it here ensures lunch sees it before dumpvars runs
-        export BUILDING_VENDOR_BOOT_IMAGE=true
         export ALLOW_MISSING_DEPENDENCIES=true
+        export BUILDING_VENDOR_BOOT_IMAGE=true
 
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         if [ $? -ne 0 ]; then
@@ -220,22 +221,28 @@ jobs:
           exit 1
         fi
 
-        make clean
-        make recoveryimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+        # Do NOT make clean on a fresh repo sync — wastes 3 minutes and
+        # can confuse the build graph on first-time builds
+        # make clean
+
+        # Use vendorbootimage, not recoveryimage.
+        # recoveryimage in twrp-12.1 does not trigger the vendor_boot path.
+        # With BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true, this is
+        # the correct target and will embed the TWRP ramdisk into vendor_boot.img
+        make vendorbootimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
         BUILD_EXIT=${PIPESTATUS[0]}
 
         echo "=== Images produced ==="
         find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "*.img" | sort
 
         if [ $BUILD_EXIT -ne 0 ]; then
-          echo "FATAL: make failed — last 80 lines:"
-          tail -80 "${GITHUB_WORKSPACE}/build.log"
+          echo "FATAL: make failed — last 100 lines:"
+          tail -100 "${GITHUB_WORKSPACE}/build.log"
           exit 1
         fi
 
         if [ -z "$(find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "vendor_boot.img")" ]; then
-          echo "FATAL: no vendor_boot.img produced"
-          grep -i 'vendor_boot\|BUILDING_VENDOR_BOOT' "${GITHUB_WORKSPACE}/build.log" | tail -20
+          echo "FATAL: vendor_boot.img not produced — last 50 lines of log:"
           tail -50 "${GITHUB_WORKSPACE}/build.log"
           exit 1
         fi
