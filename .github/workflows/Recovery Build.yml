@@ -154,36 +154,22 @@ jobs:
     - name: Patch board_config check
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        echo "=== Lines around the guard (before patch) ==="
-        grep -n "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BUILDING_VENDOR_BOOT_IMAGE" \
-          build/make/core/board_config.mk
-
-        echo ""
-        echo "=== Applying patch ==="
-
-        # Delete only the $(error ...) line — content match, not line number.
-        # Leaves the ifneq block intact but empty, so it does nothing.
+        echo "=== Removing error line ==="
+        # Use single quotes in sed pattern — prevents shell expanding $(error)
         sed -i '/Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d' \
           build/make/core/board_config.mk
 
-        # Belt-and-suspenders: also neutralize any override/unset of the variable
-        # inside the same block by commenting out lines that clear it
-        sed -i '/BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT.*:=.*$/{ /^[[:space:]]*#/! { /BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT[[:space:]]*:=[[:space:]]*$/s/^/# PATCHED: / } }' \
-          build/make/core/board_config.mk
+        echo "=== Context around patched block (lines 898-910) ==="
+        sed -n '898,910p' build/make/core/board_config.mk
 
-        echo ""
-        echo "=== Lines around the guard (after patch) ==="
-        grep -n "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BUILDING_VENDOR_BOOT_IMAGE" \
-          build/make/core/board_config.mk
-
-        echo ""
-        echo "=== Confirming no $(error) remains for this variable ==="
-        if grep -q "error.*BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT" \
+        echo "=== Verifying error line is gone ==="
+        # MUST use single quotes — double quotes cause $(error to be shell-expanded
+        if grep -q 'Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT' \
             build/make/core/board_config.mk; then
           echo "FATAL: error line still present — patch failed"
           exit 1
         else
-          echo "Patch verified OK — error line removed"
+          echo "Patch verified OK ✓"
         fi
 
     - name: Download Prebuilt Kernel and DTB
@@ -221,8 +207,12 @@ jobs:
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
+
+        # Expose BUILDING_VENDOR_BOOT_IMAGE to the envsetup/dumpvars scope
+        # board_config.mk sets it based on BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE
+        # but exporting it here ensures lunch sees it before dumpvars runs
+        export BUILDING_VENDOR_BOOT_IMAGE=true
         export ALLOW_MISSING_DEPENDENCIES=true
-        export BUILDING_VENDOR_BOOT_IMAGE=true   # ← expose to envsetup/dumpvars scope
 
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         if [ $? -ne 0 ]; then
@@ -245,7 +235,8 @@ jobs:
 
         if [ -z "$(find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "vendor_boot.img")" ]; then
           echo "FATAL: no vendor_boot.img produced"
-          tail -80 "${GITHUB_WORKSPACE}/build.log"
+          grep -i 'vendor_boot\|BUILDING_VENDOR_BOOT' "${GITHUB_WORKSPACE}/build.log" | tail -20
+          tail -50 "${GITHUB_WORKSPACE}/build.log"
           exit 1
         fi
 
