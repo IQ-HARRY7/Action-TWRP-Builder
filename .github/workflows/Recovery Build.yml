@@ -154,38 +154,37 @@ jobs:
     - name: Patch board_config check
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        python3 << 'PYEOF'
-        path = "build/make/core/board_config.mk"
-        with open(path) as f:
-            content = f.read()
+        echo "=== Lines around the guard (before patch) ==="
+        grep -n "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BUILDING_VENDOR_BOOT_IMAGE" \
+          build/make/core/board_config.mk
 
-        # Our old sed patch only silenced the error but the guard still
-        # suppresses BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT because
-        # BUILDING_VENDOR_BOOT_IMAGE is always empty when board_config.mk
-        # is evaluated (it gets set later in the main Makefile).
-        # Fix: neutralize the ifneq condition so the guard never fires.
-        patched = content.replace(
-            "ifneq ($(BUILDING_VENDOR_BOOT_IMAGE),true)",
-            "ifneq (true,true) # PATCHED: guard disabled — BUILDING_VENDOR_BOOT_IMAGE evaluated too late"
-        )
+        echo ""
+        echo "=== Applying patch ==="
 
-        if patched == content:
-            print("WARNING: Target string not found — board_config.mk may have changed")
-            # Fallback: print the lines around 902 for diagnosis
-            lines = content.splitlines()
-            for i, l in enumerate(lines[895:910], start=896):
-                print(f"  {i}: {l}")
-        else:
-            with open(path, "w") as f:
-                f.write(patched)
-            print("Patch applied successfully.")
+        # Delete only the $(error ...) line — content match, not line number.
+        # Leaves the ifneq block intact but empty, so it does nothing.
+        sed -i '/Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d' \
+          build/make/core/board_config.mk
 
-        # Verify
-        with open(path) as f:
-            for i, l in enumerate(f, 1):
-                if "BUILDING_VENDOR_BOOT_IMAGE" in l or "BOARD_MOVE_RECOVERY" in l:
-                    print(f"  line {i}: {l.rstrip()}")
-        PYEOF
+        # Belt-and-suspenders: also neutralize any override/unset of the variable
+        # inside the same block by commenting out lines that clear it
+        sed -i '/BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT.*:=.*$/{ /^[[:space:]]*#/! { /BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT[[:space:]]*:=[[:space:]]*$/s/^/# PATCHED: / } }' \
+          build/make/core/board_config.mk
+
+        echo ""
+        echo "=== Lines around the guard (after patch) ==="
+        grep -n "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT\|BUILDING_VENDOR_BOOT_IMAGE" \
+          build/make/core/board_config.mk
+
+        echo ""
+        echo "=== Confirming no $(error) remains for this variable ==="
+        if grep -q "error.*BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT" \
+            build/make/core/board_config.mk; then
+          echo "FATAL: error line still present — patch failed"
+          exit 1
+        else
+          echo "Patch verified OK — error line removed"
+        fi
 
     - name: Download Prebuilt Kernel and DTB
       run: |
@@ -223,6 +222,7 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        export BUILDING_VENDOR_BOOT_IMAGE=true   # ← expose to envsetup/dumpvars scope
 
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         if [ $? -ne 0 ]; then
@@ -231,17 +231,11 @@ jobs:
         fi
 
         make clean
-
-        # Build recoveryimage — with the guard neutralized,
-        # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT is now honoured
-        # and vendor_boot.img will be emitted as output.
         make recoveryimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
         BUILD_EXIT=${PIPESTATUS[0]}
 
-        # Confirm vendor_boot.img was produced before proceeding
-        OUT="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         echo "=== Images produced ==="
-        find "$OUT" -name "*.img" | sort
+        find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "*.img" | sort
 
         if [ $BUILD_EXIT -ne 0 ]; then
           echo "FATAL: make failed — last 80 lines:"
@@ -249,14 +243,9 @@ jobs:
           exit 1
         fi
 
-        if [ -z "$(find "$OUT" -name "vendor_boot.img")" ]; then
-          echo "FATAL: Build succeeded but vendor_boot.img still missing."
-          echo "=== board_config patch check ==="
-          grep -n "BUILDING_VENDOR_BOOT_IMAGE\|BOARD_MOVE_RECOVERY" \
-            build/make/core/board_config.mk | head -10
-          echo "=== BoardConfig.mk key vars ==="
-          grep -E "BOARD_MOVE_RECOVERY|BUILDING_VENDOR_BOOT|BOARD_RAMDISK_USE_LZ4" \
-            "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
+        if [ -z "$(find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "vendor_boot.img")" ]; then
+          echo "FATAL: no vendor_boot.img produced"
+          tail -80 "${GITHUB_WORKSPACE}/build.log"
           exit 1
         fi
 
