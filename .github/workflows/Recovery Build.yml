@@ -214,38 +214,69 @@ jobs:
         
 
     
-   # - name: Collect Output Files
-  #    run: |
-   #     OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-    #    echo "=== All .img files ==="
-   #     find "$OUT" -name "*.img" | sort
-   #     VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
-  #      if [ -z "$VENDOR_BOOT" ]; then
-   #       echo "ERROR: vendor_boot.img not found"
-   #       exit 1
-    #    fi
-  #      echo "Found: $VENDOR_BOOT"
-       ## cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-      #  python3 - << 'PYEOF'
-    #    import struct
-   #     data = open("vendor_boot.img", "rb").read()
- #       magic        = data[0:8]
- #       ramdisk_addr = struct.unpack_from("<I", data, 0x14)[0]
-#        ramdisk_size = struct.unpack_from("<I", data, 0x18)[0]
-#        print(f"Magic        : {magic}")
-#        print(f"ramdisk_addr : {hex(ramdisk_addr)}")
- #       print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
- #       assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
- #       assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
- #       assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small ({ramdisk_size} bytes)"
-#        print("All sanity checks PASSED")
-#        PYEOF 
+    - name: Collect Output Files
+      run: |
+        OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        
+        echo "=== Locating vendor_boot.img ==="
+        VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
+        if [ -z "$VENDOR_BOOT" ]; then echo "ERROR: vendor_boot.img not found"; exit 1; fi
+        echo "Found: $VENDOR_BOOT"
+        cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
+
+        echo "=== Extracting recovery.cpio from vendor_boot.img ==="
+        # 1. Locate the unpack_bootimg.py tool (AOSP standard)
+        UNPACK_SCRIPT=$(find "${{ steps.pwd.outputs.workspace-folder }}" -name "unpack_bootimg.py" -type f | head -1)
+        
+        if [ -n "$UNPACK_SCRIPT" ]; then
+          echo "Found unpack script: $UNPACK_SCRIPT"
+          
+          # 2. Unpack vendor_boot.img
+          UNPACK_DIR="${GITHUB_WORKSPACE}/unpacked"
+          mkdir -p "$UNPACK_DIR"
+          python3 "$UNPACK_SCRIPT" --boot_img "$VENDOR_BOOT" --out "$UNPACK_DIR"
+          
+          # 3. Find the ramdisk inside the unpacked folder
+          # It might be named ramdisk, ramdisk.lz4, or ramdisk.gz depending on compression
+          RAMDISK_FILE=$(find "$UNPACK_DIR" -name "ramdisk*" | head -1)
+          
+          if [ -n "$RAMDISK_FILE" ]; then
+            echo "Found compressed ramdisk: $RAMDISK_FILE"
+            
+            # 4. Decompress to get raw recovery.cpio
+            # Since BOARD_RAMDISK_USE_LZ4 := true, we expect LZ4 compression
+            if [[ "$RAMDISK_FILE" == *.lz4 ]]; then
+              lz4 -d "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio"
+            else
+              # Fallback: Try lz4 first, then gzip
+              lz4 -d "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio" 2>/dev/null || \
+              gunzip -c "$RAMDISK_FILE" > "${GITHUB_WORKSPACE}/recovery.cpio"
+            fi
+            
+            echo "Successfully created recovery.cpio"
+            ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
+          else
+            echo "ERROR: Could not find ramdisk inside unpacked vendor_boot"
+            exit 1
+          fi
+        else
+          echo "ERROR: Could not find unpack_bootimg.py tool"
+          exit 1
+        fi
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: twrp-ramdisk-recovery.img
+        # Upload BOTH files
+        files: |
+          vendor_boot.img
+          recovery.cpio
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
+        body: |
+          TWRP vendor_boot for ${{ github.event.inputs.DEVICE_NAME }}
+          Manifest : ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Flash    : fastboot flash vendor_boot vendor_boot.img
+          Extract  : recovery.cpio (Raw ramdisk for debugging)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
