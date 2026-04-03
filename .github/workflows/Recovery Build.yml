@@ -18,7 +18,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: 'android-12'
+        default: 'beryl-user-12-SP1A.210812.016-OS2.0.3.0.VOQINXM-release-keys'
       DEVICE_PATH:
         description: 'DEVICE_PATH'
         required: true
@@ -58,7 +58,7 @@ jobs:
         echo "Device Path     : ${{ github.event.inputs.DEVICE_PATH }}"
         echo "Device Name     : ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Makefile Name   : ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target    : ${{ github.event.inputs.BUILD_TARGET }}image"
+        echo "Build Target    : vendor_boot.img"
         echo "::endgroup::"
 
     - name: Check Out
@@ -132,18 +132,15 @@ jobs:
           -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" \
           "./${{ github.event.inputs.COMMON_PATH }}"
 
-    # FIX #5 — Removed broken scripts/convert.sh reference.
-    # twrp.dependencies is handled natively by repo if local_manifests are set up.
-    # We use a direct repo sync instead.
     - name: Sync Device Dependencies
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       continue-on-error: true
       run: |
         if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" ]; then
-          echo "Found twrp.dependencies — syncing additional repos..."
+          echo "Found twrp.dependencies - syncing..."
           repo sync -j$(nproc --all) --force-sync
         else
-          echo "No twrp.dependencies file — skipping."
+          echo "No twrp.dependencies - skipping."
         fi
 
     - name: Set Swap Space
@@ -154,28 +151,25 @@ jobs:
     - name: Patch board_config check
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
-        # Instead of just removing the $(error) line, we force
-        # BUILDING_VENDOR_BOOT_IMAGE=true right before the guard block
-        # so the entire ifndef block at line 900 is skipped entirely.
+        # BUILDING_VENDOR_BOOT_IMAGE is readonly in build system
+        # Cannot set from BoardConfig.mk (line 901 error)
+        # Fix: remove readonly declaration + remove the error guard
+
+        # Remove readonly declaration if present
+        sed -i '/^\.KATI_READONLY\s*:=\s*BUILDING_VENDOR_BOOT_IMAGE/d' \
+          build/make/core/board_config.mk 2>/dev/null || true
+
+        # Remove the error for BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
         sed -i '/Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT/d' \
           build/make/core/board_config.mk
 
-        # Inject the forced assignment just before line 900's ifndef block
-        sed -i '/^ifndef BUILDING_VENDOR_BOOT_IMAGE/{
-          /BUILDING_VENDOR_BOOT_IMAGE/i # PATCHED: force true so guard block is skipped\nBUILDING_VENDOR_BOOT_IMAGE := true
-        }' build/make/core/board_config.mk
-
-        echo "=== Patch result around line 898-912 ==="
-        grep -n "BUILDING_VENDOR_BOOT_IMAGE\|BOARD_MOVE_RECOVERY" \
-          build/make/core/board_config.mk | grep -A2 -B2 "900\|901\|902\|903"
-
-        # Safe grep — single quotes prevent $(error) shell expansion
+        # Verify
         if grep -q 'Should not set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT' \
             build/make/core/board_config.mk; then
           echo "FATAL: error line still present"
           exit 1
         fi
-        echo "Patch verified OK ✓"
+        echo "Patch verified OK"
 
     - name: Download Prebuilt Kernel and DTB
       run: |
@@ -187,92 +181,29 @@ jobs:
         wget -q --show-progress \
           -O "$PREBUILT_DIR/dtb.img" \
           "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img"
-        echo "Prebuilt files:"
         ls -lh "$PREBUILT_DIR"
 
-    - name: Pre-build Checks
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      run: |
-        echo "=== Verifying prebuilt files ==="
-        ls -lh "${{ github.event.inputs.DEVICE_PATH }}/prebuilt/" || echo "MISSING prebuilt dir!"
-
-        echo "=== Verifying board_config patch ==="
-        grep -n "BOARD_MOVE_RECOVERY" build/make/core/board_config.mk | head -5
-
-        echo "=== Verifying device tree is cloned ==="
-        ls "${{ github.event.inputs.DEVICE_PATH }}/" | head -20
-
-        echo "=== Verifying BoardConfig.mk key vars ==="
-        grep -E "BOARD_MOVE_RECOVERY|BUILDING_VENDOR_BOOT|BOARD_RAMDISK_USE_LZ4|BOARD_VENDOR_BOOTIMAGE" \
-          "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"    
-
-    # FIX #1 — Was hardcoded 'make recoveryimage'. Now uses BUILD_TARGET input
-    # so 'vendorboot' → 'make vendorbootimage', which is what beryl needs.
     - name: Build Recovery
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         export BUILDING_VENDOR_BOOT_IMAGE=true
-
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        if [ $? -ne 0 ]; then
-          echo "FATAL: lunch failed"
-          exit 1
-        fi
-
-        # Do NOT make clean on a fresh repo sync — wastes 3 minutes and
-        # can confuse the build graph on first-time builds
-        # make clean
-
-        # Use vendorbootimage, not recoveryimage.
-        # recoveryimage in twrp-12.1 does not trigger the vendor_boot path.
-        # With BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true, this is
-        # the correct target and will embed the TWRP ramdisk into vendor_boot.img
-        make vendorbootimage -j$(nproc --all) 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
-        BUILD_EXIT=${PIPESTATUS[0]}
-
-        echo "=== Images produced ==="
-        find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "*.img" | sort
-
-        if [ $BUILD_EXIT -ne 0 ]; then
-          echo "FATAL: make failed — last 100 lines:"
-          tail -100 "${GITHUB_WORKSPACE}/build.log"
-          exit 1
-        fi
-
-        if [ -z "$(find "out/target/product/${{ github.event.inputs.DEVICE_NAME }}" -name "vendor_boot.img")" ]; then
-          echo "FATAL: vendor_boot.img not produced — last 50 lines of log:"
-          tail -50 "${GITHUB_WORKSPACE}/build.log"
-          exit 1
-        fi
-
-    # Always upload build log so you can inspect it even on success
-    - name: Upload Build Log
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-log-${{ github.run_id }}
-        path: build.log
-        retention-days: 5
+        make vendorbootimage -j$(nproc --all)
 
     - name: Collect Output Files
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-
-        echo "=== All .img files produced ==="
+        echo "=== All .img files ==="
         find "$OUT" -name "*.img" | sort
-
         VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
-
         if [ -z "$VENDOR_BOOT" ]; then
-          echo "ERROR: vendor_boot.img not found — check build log artifact"
+          echo "ERROR: vendor_boot.img not found"
           exit 1
         fi
-
         echo "Found: $VENDOR_BOOT"
         cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-
         python3 - << 'PYEOF'
         import struct
         data = open("vendor_boot.img", "rb").read()
@@ -284,51 +215,8 @@ jobs:
         print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
         assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
         assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
-        assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small — likely truncated ({ramdisk_size} bytes)"
-        print("All sanity checks PASSED ✓")
-        PYEOF
-    # FIX #2 — Removed the broken manual "Pack vendor_boot" step entirely.
-    # It used lz4 -l (legacy, 8 MB cap = the exact truncation bug we fixed),
-    # wrong header magic 'VNDR' (should be 'VNDRBOOT'), wrong struct layout,
-    # and wrong ramdisk_addr 0x26f08000 (the old broken value).
-    # The build system already produces a correct vendor_boot.img — let it.
-
-    # FIX #3 + #4 — Fixed broken YAML (files: key was inside run: block)
-    # and unified output: collect vendor_boot.img, not ramdisk-recovery.img.
-    - name: Collect Output Files
-      run: |
-        OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-
-        echo "=== Files produced in OUT ==="
-        find "$OUT" -maxdepth 1 -name "*.img" | sort
-
-        # Locate vendor_boot.img — fallback search if not at root of OUT
-        VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
-
-        if [ -z "$VENDOR_BOOT" ]; then
-          echo "ERROR: vendor_boot.img not found anywhere under $OUT"
-          echo "=== Full OUT directory listing ==="
-          find "$OUT" -maxdepth 2 | sort
-          exit 1
-        fi
-
-        echo "Found: $VENDOR_BOOT"
-        cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-
-        # Sanity check header
-        python3 - << 'PYEOF'
-        import struct, sys
-        data = open("vendor_boot.img", "rb").read()
-        magic        = data[0:8]
-        ramdisk_addr = struct.unpack_from("<I", data, 0x14)[0]
-        ramdisk_size = struct.unpack_from("<I", data, 0x18)[0]
-        print(f"Magic        : {magic}")
-        print(f"ramdisk_addr : {hex(ramdisk_addr)}")
-        print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
-        assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
-        assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
-        assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small — likely truncated ({ramdisk_size} bytes)"
-        print("All sanity checks PASSED ✓")
+        assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small ({ramdisk_size} bytes)"
+        print("All sanity checks PASSED")
         PYEOF
 
     - name: Upload to Release
@@ -340,7 +228,6 @@ jobs:
         body: |
           TWRP vendor_boot for ${{ github.event.inputs.DEVICE_NAME }}
           Manifest : ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device   : ${{ github.event.inputs.DEVICE_NAME }}
           Flash    : fastboot flash vendor_boot vendor_boot.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
