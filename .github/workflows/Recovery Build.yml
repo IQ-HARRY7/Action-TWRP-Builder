@@ -188,7 +188,6 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        export BUILDING_VENDOR_BOOT_IMAGE=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
         make vendorbootimage -j$(nproc --all)
 
