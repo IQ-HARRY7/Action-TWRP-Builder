@@ -188,8 +188,13 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        export BUILDING_VENDOR_BOOT_IMAGE=true          # ← THE MISSING LINE
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        echo "=== Pre-build out check ==="
+        ls out/target/product/${{ github.event.inputs.DEVICE_NAME }}/ 2>/dev/null || echo "(out dir not yet created)"
         make vendorbootimage -j$(nproc --all)
+        echo "=== Post-build out check ==="
+        find out/target/product/${{ github.event.inputs.DEVICE_NAME }} -name "*.img" | sort
 
     - name: Collect Output Files
       run: |
