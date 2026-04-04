@@ -200,32 +200,26 @@ jobs:
         tail -30 build.log
 
 
-    - name: Pack and Collect recovery.cpio
+    - name: Collect Output
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        RECOVERY_ROOT="$OUT/recovery/root"
-
-        echo "=== Recovery root contents ==="
-        ls "$RECOVERY_ROOT"
-
-        echo "=== Packing CPIO ==="
-        cd "$RECOVERY_ROOT"
-        find . | cpio -H newc -o > "${GITHUB_WORKSPACE}/recovery.cpio"
-
-        echo "=== Compressing with LZ4 ==="
-        lz4 -l -12 "${GITHUB_WORKSPACE}/recovery.cpio" \
-                    "${GITHUB_WORKSPACE}/recovery.cpio.lz4"
-
-        echo "=== Result ==="
-        ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
-        ls -lh "${GITHUB_WORKSPACE}/recovery.cpio.lz4"
-
+        echo "=== recovery/root tree ==="
+        find "$OUT/recovery/root" | sort
+        RECOVERY="$OUT/recovery.img"
+        if [ ! -f "$RECOVERY" ]; then
+          echo "ERROR: recovery.img not found"
+          find "$OUT" -name "*.img" | sort
+          exit 1
+        fi
+        echo "Size: $(du -h $RECOVERY)"
+        cp "$RECOVERY" "${GITHUB_WORKSPACE}/recovery.img"
+        
+    
+    
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          recovery.cpio
-          recovery.cpio.lz4
+        files: recovery.img
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
       env:
