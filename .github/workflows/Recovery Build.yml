@@ -193,7 +193,13 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        make recoveryimage -j$(nproc --all)
+        make recoveryimage -j$(nproc --all) 2>&1 | tee build.log
+        echo "=== FULL recovery/root tree ==="
+        find out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/ | sort
+        echo "=== Checking for TWRP binary ==="
+        find out/ -name "twrp" -o -name "recovery" -type f 2>/dev/null | sort
+        echo "=== Last 50 lines of build log ==="
+        tail -50 build.log
 
 
     - name: Pack and Collect recovery.cpio
