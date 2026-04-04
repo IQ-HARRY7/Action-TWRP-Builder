@@ -193,7 +193,7 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        mka adbd recoveryimage 2>&1 | tee build.log
+        mka adbd recovery 2>&1 | tee build.log
         echo "=== recovery/root tree ==="
         find out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/root | sort
         echo "=== Last 30 lines ==="
