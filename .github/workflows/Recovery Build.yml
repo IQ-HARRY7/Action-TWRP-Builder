@@ -196,55 +196,53 @@ jobs:
         make recoveryimage -j$(nproc --all)
 
         
-    - name: Collect Ramdisk
+    - name: Build Recovery
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      run: |
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
+        make recoveryimage -j$(nproc --all)
+
+    - name: Collect Output
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        echo "=== Ramdisk candidates ==="
-        find "$OUT" -name "ramdisk*.img" | sort
-        RAMDISK=$(find "$OUT" -name "ramdisk-recovery.img" | head -1)
-        if [ -z "$RAMDISK" ]; then
-          RAMDISK=$(find "$OUT" -name "ramdisk.img" | head -1)
-        fi
-        if [ -z "$RAMDISK" ]; then
-          echo "ERROR: ramdisk not found"
+
+        echo "======= FULL OUT DIR (depth 3) ======="
+        find "$OUT" -maxdepth 3 | sort
+
+        echo "======= ALL .img FILES ======="
+        find "$OUT" -name "*.img" | sort
+
+        echo "======= ALL .cpio FILES ======="
+        find "$OUT" -name "*.cpio*" | sort
+
+        # Search in priority order — grab whatever exists
+        RESULT=""
+        for candidate in \
+            "$OUT/recovery.img" \
+            "$OUT/ramdisk-recovery.img" \
+            "$OUT/ramdisk.img" \
+            $(find "$OUT" -name "*.cpio" | head -1) \
+            $(find "$OUT" -name "*.cpio.lz4" | head -1); do
+          if [ -f "$candidate" ]; then
+            RESULT="$candidate"
+            echo ">>> FOUND: $RESULT ($(du -h $RESULT | cut -f1))"
+            break
+          fi
+        done
+
+        if [ -z "$RESULT" ]; then
+          echo "FATAL: Nothing usable produced. See directory listing above."
           exit 1
         fi
-        echo "Found: $RAMDISK ($(du -h $RAMDISK | cut -f1))"
-        cp "$RAMDISK" "${GITHUB_WORKSPACE}/twrp-ramdisk-recovery.img"
-        
 
-    
-   # - name: Collect Output Files
-  #    run: |
-   #     OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-    #    echo "=== All .img files ==="
-   #     find "$OUT" -name "*.img" | sort
-   #     VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
-  #      if [ -z "$VENDOR_BOOT" ]; then
-   #       echo "ERROR: vendor_boot.img not found"
-   #       exit 1
-    #    fi
-  #      echo "Found: $VENDOR_BOOT"
-       ## cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-      #  python3 - << 'PYEOF'
-    #    import struct
-   #     data = open("vendor_boot.img", "rb").read()
- #       magic        = data[0:8]
- #       ramdisk_addr = struct.unpack_from("<I", data, 0x14)[0]
-#        ramdisk_size = struct.unpack_from("<I", data, 0x18)[0]
-#        print(f"Magic        : {magic}")
-#        print(f"ramdisk_addr : {hex(ramdisk_addr)}")
- #       print(f"ramdisk_size : {ramdisk_size / 1024 / 1024:.2f} MB")
- #       assert magic == b"VNDRBOOT",       f"FAIL: bad magic {magic}"
- #       assert ramdisk_addr == 0x44000000, f"FAIL: wrong ramdisk_addr {hex(ramdisk_addr)}"
- #       assert ramdisk_size > 10_000_000,  f"FAIL: ramdisk too small ({ramdisk_size} bytes)"
-#        print("All sanity checks PASSED")
-#        PYEOF 
+        cp "$RESULT" "${GITHUB_WORKSPACE}/twrp-recovery.img"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: twrp-ramdisk-recovery.img
+        files: twrp-recovery.img
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
       env:
