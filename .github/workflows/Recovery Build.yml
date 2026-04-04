@@ -196,78 +196,47 @@ jobs:
         make recoveryimage -j$(nproc --all)
 
         
-    - name: Collect Ramdisk
-      run: |
-        OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        echo "=== Ramdisk candidates ==="
-        find "$OUT" -name "ramdisk*.img" | sort
-        RAMDISK=$(find "$OUT" -name "ramdisk-recovery.img" | head -1)
-        if [ -z "$RAMDISK" ]; then
-          RAMDISK=$(find "$OUT" -name "ramdisk.img" | head -1)
-        fi
-        if [ -z "$RAMDISK" ]; then
-          echo "ERROR: ramdisk not found"
-          exit 1
-        fi
-        echo "Found: $RAMDISK ($(du -h $RAMDISK | cut -f1))"
-        cp "$RAMDISK" "${GITHUB_WORKSPACE}/twrp-ramdisk-recovery.img"
-        
-
-    
-    - name: Collect Output Files
+    - name: Extract recovery.cpio from vendor_boot.img
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
         
-        echo "=== Locating vendor_boot.img ==="
+        # 1. Locate vendor_boot.img
         VENDOR_BOOT=$(find "$OUT" -name "vendor_boot.img" | head -1)
         if [ -z "$VENDOR_BOOT" ]; then echo "ERROR: vendor_boot.img not found"; exit 1; fi
         echo "Found: $VENDOR_BOOT"
-        cp "$VENDOR_BOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
 
-        echo "=== Extracting recovery.cpio from vendor_boot.img ==="
-        # 1. Locate the unpack_bootimg.py tool (AOSP standard)
+        # 2. Locate unpack_bootimg.py (AOSP standard tool)
         UNPACK_SCRIPT=$(find "${{ steps.pwd.outputs.workspace-folder }}" -name "unpack_bootimg.py" -type f | head -1)
-        
-        if [ -n "$UNPACK_SCRIPT" ]; then
-          echo "Found unpack script: $UNPACK_SCRIPT"
-          
-          # 2. Unpack vendor_boot.img
-          UNPACK_DIR="${GITHUB_WORKSPACE}/unpacked"
-          mkdir -p "$UNPACK_DIR"
-          python3 "$UNPACK_SCRIPT" --boot_img "$VENDOR_BOOT" --out "$UNPACK_DIR"
-          
-          # 3. Find the ramdisk inside the unpacked folder
-          # It might be named ramdisk, ramdisk.lz4, or ramdisk.gz depending on compression
-          RAMDISK_FILE=$(find "$UNPACK_DIR" -name "ramdisk*" | head -1)
-          
-          if [ -n "$RAMDISK_FILE" ]; then
-            echo "Found compressed ramdisk: $RAMDISK_FILE"
-            
-            # 4. Decompress to get raw recovery.cpio
-            # Since BOARD_RAMDISK_USE_LZ4 := true, we expect LZ4 compression
-            if [[ "$RAMDISK_FILE" == *.lz4 ]]; then
-              lz4 -d "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio"
-            else
-              # Fallback: Try lz4 first, then gzip
-              lz4 -d "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio" 2>/dev/null || \
-              gunzip -c "$RAMDISK_FILE" > "${GITHUB_WORKSPACE}/recovery.cpio"
-            fi
-            
-            echo "Successfully created recovery.cpio"
-            ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
-          else
-            echo "ERROR: Could not find ramdisk inside unpacked vendor_boot"
-            exit 1
-          fi
+        if [ -z "$UNPACK_SCRIPT" ]; then echo "ERROR: unpack_bootimg.py not found"; exit 1; fi
+        echo "Using unpack script: $UNPACK_SCRIPT"
+
+        # 3. Unpack vendor_boot.img
+        UNPACK_DIR="${GITHUB_WORKSPACE}/unpacked"
+        mkdir -p "$UNPACK_DIR"
+        python3 "$UNPACK_SCRIPT" --boot_img "$VENDOR_BOOT" --out "$UNPACK_DIR"
+
+        # 4. Find the compressed ramdisk inside
+        RAMDISK_FILE=$(find "$UNPACK_DIR" -name "ramdisk*" | head -1)
+        if [ -z "$RAMDISK_FILE" ]; then echo "ERROR: ramdisk not found in unpacked vendor_boot"; exit 1; fi
+        echo "Found compressed ramdisk: $RAMDISK_FILE"
+
+        # 5. Decompress to raw recovery.cpio (TWRP uses LZ4 frame format)
+        if [[ "$RAMDISK_FILE" == *.lz4 ]]; then
+          lz4 -d "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio"
+        elif [[ "$RAMDISK_FILE" == *.gz ]]; then
+          gunzip -c "$RAMDISK_FILE" > "${GITHUB_WORKSPACE}/recovery.cpio"
         else
-          echo "ERROR: Could not find unpack_bootimg.py tool"
-          exit 1
+          # Fallback: assume raw cpio
+          cp "$RAMDISK_FILE" "${GITHUB_WORKSPACE}/recovery.cpio"
         fi
+
+        echo "✅ Successfully created recovery.cpio"
+        ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
+        echo "Final size: $(du -h "${GITHUB_WORKSPACE}/recovery.cpio" | cut -f1)"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        # Upload BOTH files
         files: |
           vendor_boot.img
           recovery.cpio
@@ -277,6 +246,6 @@ jobs:
           TWRP vendor_boot for ${{ github.event.inputs.DEVICE_NAME }}
           Manifest : ${{ github.event.inputs.MANIFEST_BRANCH }}
           Flash    : fastboot flash vendor_boot vendor_boot.img
-          Extract  : recovery.cpio (Raw ramdisk for debugging)
+          Extract  : recovery.cpio (Raw ramdisk for debugging/modding)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
