@@ -203,23 +203,20 @@ jobs:
     - name: Collect Output
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        echo "=== recovery/root tree ==="
-        find "$OUT/recovery/root" | sort
-        RECOVERY="$OUT/recovery.img"
-        if [ ! -f "$RECOVERY" ]; then
-          echo "ERROR: recovery.img not found"
-          find "$OUT" -name "*.img" | sort
-          exit 1
-        fi
-        echo "Size: $(du -h $RECOVERY)"
-        cp "$RECOVERY" "${GITHUB_WORKSPACE}/recovery.img"
-        
-    
-    
+        RECOVERY_ROOT="$OUT/recovery/root"
+
+        echo "=== Verifying TWRP binary exists ==="
+        find "$RECOVERY_ROOT" -name "twrp" -o -name "recovery" -o -name "init" | sort
+
+        echo "=== Packing full recovery.cpio ==="
+        cd "$RECOVERY_ROOT"
+        find . | cpio -H newc -o > "${GITHUB_WORKSPACE}/recovery.cpio"
+        ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: recovery.img
+        files: recovery.cpio
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
       env:
