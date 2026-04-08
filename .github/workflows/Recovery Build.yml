@@ -184,48 +184,55 @@ jobs:
           "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img"
         ls -lh "$PREBUILT_DIR"
 
-    - name: Build Recovery (vendor_boot)
+    - name: Build Recovery
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         export BUILDING_VENDOR_BOOT_IMAGE=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        # Build vendor_boot target - NOT mka recovery (wrong for GKI 2.0)
-        mka adbd vendorboot 2>&1 | tee build.log
-        echo "=== Output files ==="
-        ls -lh out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot*.img 2>/dev/null || true
+        # Minimal manifest builds ramdisk only - NOT vendorboot target
+        mka adbd recovery 2>&1 | tee build.log
+        echo "=== recovery/root tree ==="
+        find out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/root | sort
         echo "=== Last 30 lines ==="
         tail -30 build.log
 
     - name: Collect Output
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        RECOVERY_ROOT="$OUT/recovery/root"
 
-        echo "=== Locating vendor_boot.img ==="
-        VBOOT="$OUT/vendor_boot.img"
-        if [ ! -f "$VBOOT" ]; then
-          echo "FATAL: vendor_boot.img not found at $VBOOT"
-          ls -lh "$OUT"/*.img 2>/dev/null || true
+        if [ ! -d "$RECOVERY_ROOT" ]; then
+          echo "FATAL: recovery/root not found"
+          ls -lh "$OUT/" || true
           exit 1
         fi
 
-        SIZE=$(stat -c%s "$VBOOT")
-        echo "vendor_boot.img size: $SIZE bytes ($(( SIZE / 1024 / 1024 )) MB)"
+        echo "=== Packing recovery.cpio ==="
+        cd "$RECOVERY_ROOT"
+        find . | cpio -H newc -o > "${GITHUB_WORKSPACE}/recovery.cpio"
+        RAW_SIZE=$(stat -c%s "${GITHUB_WORKSPACE}/recovery.cpio")
+        echo "Raw cpio size: $RAW_SIZE bytes ($(( RAW_SIZE / 1024 / 1024 )) MB)"
 
-        # Sanity check: must be <= 64MB (BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)
-        if [ "$SIZE" -gt 67108864 ]; then
-          echo "FATAL: vendor_boot.img ($SIZE) exceeds partition size (67108864)"
+        # Also produce LZ4-legacy compressed version ready for magiskboot
+        lz4 -l -9 "${GITHUB_WORKSPACE}/recovery.cpio" \
+                   "${GITHUB_WORKSPACE}/recovery.cpio.lz4"
+        LZ4_SIZE=$(stat -c%s "${GITHUB_WORKSPACE}/recovery.cpio.lz4")
+        echo "LZ4 cpio size: $LZ4_SIZE bytes ($(( LZ4_SIZE / 1024 / 1024 )) MB)"
+
+        if [ "$RAW_SIZE" -lt 1048576 ]; then
+          echo "FATAL: cpio too small ($RAW_SIZE), build likely failed"
           exit 1
         fi
-
-        cp "$VBOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-        echo "Artifact ready: vendor_boot.img"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: vendor_boot.img
+        # Upload BOTH - raw cpio and lz4 compressed
+        files: |
+          recovery.cpio
+          recovery.cpio.lz4
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
       env:
