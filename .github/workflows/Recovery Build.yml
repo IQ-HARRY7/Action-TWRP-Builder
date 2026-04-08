@@ -184,43 +184,39 @@ jobs:
           "https://github.com/IQ-HARRY7/android_device_xiaomi_beryl/releases/download/Kernal/dtb.img"
         ls -lh "$PREBUILT_DIR"
 
-    - name: Build Recovery (vendor_boot)
+    - name: Build Recovery
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         export BUILDING_VENDOR_BOOT_IMAGE=true
         lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng
-        mka adbd vendorbootimage 2>&1 | tee build.log
-        echo "=== Output ==="
-        ls -lh out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img 2>/dev/null || true
+        mka adbd recovery 2>&1 | tee build.log
         tail -30 build.log
 
     - name: Collect Output
       run: |
         OUT="${{ steps.pwd.outputs.workspace-folder }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        RECOVERY_ROOT="$OUT/recovery/root"
 
-        VBOOT="$OUT/vendor_boot.img"
-        if [ ! -f "$VBOOT" ]; then
-          echo "FATAL: vendor_boot.img not found"
-          ls -lh "$OUT/"*.img 2>/dev/null || true
+        if [ ! -d "$RECOVERY_ROOT" ]; then
+          echo "FATAL: recovery/root not found"
           exit 1
         fi
 
-        SIZE=$(stat -c%s "$VBOOT")
-        echo "Size: $SIZE bytes ($(( SIZE / 1024 / 1024 )) MB)"
-        if [ "$SIZE" -gt 67108864 ]; then
-          echo "FATAL: exceeds partition size"
-          exit 1
-        fi
+        # Inject init before packing (GKI 2.0 fix)
+        ln -sf /system/bin/init "$RECOVERY_ROOT/init"
+        cp "$RECOVERY_ROOT/system/etc/init/hw/init.rc" "$RECOVERY_ROOT/init.rc"
 
-        cp "$VBOOT" "${GITHUB_WORKSPACE}/vendor_boot.img"
-        echo "✅ vendor_boot.img ready"
+        echo "=== Packing fixed recovery.cpio ==="
+        cd "$RECOVERY_ROOT"
+        find . | cpio -H newc -o > "${GITHUB_WORKSPACE}/recovery.cpio"
+        ls -lh "${GITHUB_WORKSPACE}/recovery.cpio"
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: vendor_boot.img
+        files: recovery.cpio
         name: TWRP-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: twrp-${{ github.run_id }}
       env:
